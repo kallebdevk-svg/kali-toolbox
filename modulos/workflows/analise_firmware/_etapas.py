@@ -18,21 +18,13 @@ TIMEOUTS = {
     "identificacao": 60,
     "estrutura": 300,
     "extracao": 900,
-    "pos_processamento": 300,
+    "pos_processamento": 600,
 }
 
-# Padrões para achar coisas interessantes nos arquivos extraídos.
 PADROES_SENSIVEIS = [
-    r"/etc/passwd",
-    r"/etc/shadow",
-    r"id_rsa",
-    r"id_dsa",
-    r"\.pem$",
-    r"\.crt$",
-    r"\.key$",
-    r"\.p12$",
-    r"authorized_keys",
-    r"\.htpasswd",
+    r"/etc/passwd", r"/etc/shadow", r"id_rsa", r"id_dsa",
+    r"\.pem$", r"\.crt$", r"\.key$", r"\.p12$",
+    r"authorized_keys", r"\.htpasswd",
 ]
 
 PADROES_STRINGS_INTERESSANTES = [
@@ -40,6 +32,21 @@ PADROES_STRINGS_INTERESSANTES = [
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
     r"(?i)(password|passwd|senha|secret|api[_-]?key)\s*[=:]\s*\S+",
     r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b",
+]
+
+# Tipos de estrutura que o binwalk consegue desempacotar. Se nenhuma
+# dessas aparece, não vale a pena chamar binwalk -e.
+TIPOS_EXTRAIVEIS = [
+    "squashfs", "jffs2", "cramfs", "ubifs", "yaffs", "romfs",
+    "gzip compressed data", "bzip2 compressed data", "lzma compressed data",
+    "lz4 compressed data", "lzop compressed data", "xz compressed data",
+    "zlib compressed data", "compress'd data", "zip archive",
+    "7-zip archive", "rar archive", "cab archive", "tar archive",
+    "linux kernel x86 boot executable", "linux kernel arm boot executable",
+    "uimage", "trx firmware", "chk header", "motorola s-record",
+    "device tree blob", "android bootimg", "openssl encryption",
+    "filesystem", "ext2 filesystem", "ext4 filesystem",
+    "iso 9660", "cpio archive", "arc archive", "arj archive",
 ]
 
 
@@ -51,6 +58,27 @@ def _estado(nome, estado, resumo, detalhe, duracao, extra=None):
     return r
 
 
+def _compilar_padroes_extras(texto):
+    if not texto:
+        return [], []
+    compilados, invalidos = [], []
+    for bruto in texto.split(","):
+        bruto = bruto.strip()
+        if not bruto:
+            continue
+        try:
+            compilados.append((bruto, re.compile(bruto)))
+        except re.error as e:
+            invalidos.append((bruto, str(e)))
+    return compilados, invalidos
+
+
+def _linha_parece_estrutura(linha):
+    """Verifica se uma linha do binwalk descreve algo extraível."""
+    minuscula = linha.lower()
+    return any(tipo in minuscula for tipo in TIPOS_EXTRAIVEIS)
+
+
 # --------------------------------------------------------------------------
 # Etapa 1 — identificação
 # --------------------------------------------------------------------------
@@ -59,7 +87,7 @@ def etapa_identificacao(caminho, status, ctx):
         return _estado("identificacao", "ausente", "file não instalado", "", 0.0)
 
     inicio = time.monotonic()
-    codigo, tipo, erro, _ = rodar(["file", "-b", caminho], 20)
+    codigo, tipo, _, _ = rodar(["file", "-b", caminho], 20)
     tipo = tipo.strip() if codigo == 0 else "desconhecido"
 
     hashes = {}
@@ -87,7 +115,7 @@ def etapa_identificacao(caminho, status, ctx):
 
 
 # --------------------------------------------------------------------------
-# Etapa 2 — estrutura (binwalk sem extrair)
+# Etapa 2 — estrutura
 # --------------------------------------------------------------------------
 def etapa_estrutura(caminho, status, ctx):
     if not binario_existe("binwalk"):
@@ -109,29 +137,45 @@ def etapa_estrutura(caminho, status, ctx):
               if l.strip() and not l.startswith(("DECIMAL", "----", "Scan Time",
                                                  "Target File", "MD5 Checksum",
                                                  "Signatures", "WARNING", "NOTE:"))]
+
+    # Separa "estruturas extraíveis" de "achados informativos"
+    extraiveis = [l for l in linhas if _linha_parece_estrutura(l)]
+    informativos = [l for l in linhas if l not in extraiveis]
+
     ctx["estrutura_linhas"] = linhas
-    ctx["tem_estrutura"] = len(linhas) > 0
+    ctx["estruturas_extraiveis"] = extraiveis
+    ctx["tem_estrutura"] = len(extraiveis) > 0
 
     if not linhas:
         return _estado("estrutura", "parcial",
-                       "nada extraível", "(sem estruturas identificadas)", duracao)
+                       "nenhuma estrutura identificada",
+                       "(o binwalk não reconheceu nada neste arquivo)", duracao)
+
+    if not extraiveis:
+        detalhe = (f"Achados informativos (não extraíveis):\n"
+                   + "\n".join(f"  {l}" for l in informativos[:30])
+                   + "\n\nNenhuma estrutura desempacotável foi encontrada.")
+        return _estado("estrutura", "parcial",
+                       f"{len(informativos)} achados informativos, "
+                       f"nenhuma estrutura extraível",
+                       detalhe, duracao)
 
     detalhe = limitar_linhas(saida, 60, "... (mais entradas no relatório completo)")
-    return _estado("estrutura", "ok", f"{len(linhas)} estruturas identificadas",
-                   detalhe, duracao)
+    resumo = (f"{len(extraiveis)} extraíveis, "
+              f"{len(informativos)} informativos")
+    return _estado("estrutura", "ok", resumo, detalhe, duracao)
 
 
 # --------------------------------------------------------------------------
-# Etapa 3 — extração (condicional: só roda se estrutura achou algo)
+# Etapa 3 — extração
 # --------------------------------------------------------------------------
 def etapa_extracao(caminho, status, ctx):
     if not ctx.get("tem_estrutura"):
-        return _estado("extracao", "pulada",
-                       "estrutura vazia, nada a extrair", "", 0.0)
+        motivo = "nenhuma estrutura extraível encontrada"
+        return _estado("extracao", "pulada", motivo, "", 0.0)
     if not binario_existe("binwalk"):
         return _estado("extracao", "ausente", "binwalk não instalado", "", 0.0)
 
-    # Verifica espaço livre em /tmp
     try:
         livre = shutil.disk_usage("/tmp").free
     except OSError:
@@ -141,7 +185,6 @@ def etapa_extracao(caminho, status, ctx):
                        f"espaço em /tmp insuficiente ({livre // (1024*1024)} MB)",
                        "mínimo recomendado: 200 MB livres", 0.0)
 
-    # Diretório isolado por execução
     selo = datetime.now().strftime("%Y%m%d_%H%M%S")
     destino = Path("/tmp") / f"workflow_firmware_{selo}"
     try:
@@ -152,35 +195,48 @@ def etapa_extracao(caminho, status, ctx):
 
     ctx["dir_extracao"] = str(destino)
 
-    def acao():
-        c, s, e, estourou = rodar(["binwalk", "-e", "-C", str(destino), caminho],
-                                  TIMEOUTS["extracao"])
-        # binwalk retorna 0 ou 1 dependendo do que achou; tratamos 0/1 como sucesso
-        sucesso = (c in (0, 1)) and not estourou
-        return sucesso, s, c, e, estourou
-
+    status("iniciando extracao")
     inicio = time.monotonic()
-    sucesso, saida, tentativas = tentar_com_retry("extracao", acao, status)
+    c, saida, stderr, estourou = rodar(
+        ["binwalk", "-e", "-C", str(destino), caminho], TIMEOUTS["extracao"])
     duracao = time.monotonic() - inicio
 
-    if not sucesso:
+    if estourou:
+        status("extracao excedeu o tempo limite")
         return _estado("extracao", "falhou",
-                       "falha na extração", str(saida)[:500], duracao)
+                       f"tempo limite de {TIMEOUTS['extracao']}s excedido",
+                       str(saida)[:500] or "(sem saída)", duracao)
 
-    # Conta arquivos gerados
     total_arquivos = sum(1 for _ in destino.rglob("*") if _.is_file())
-    ctx["total_extraidos"] = total_arquivos
 
-    resumo = f"{total_arquivos} arquivos extraídos em {destino}"
-    return _estado("extracao", "ok", resumo,
-                   f"Diretório: {destino}\nArquivos: {total_arquivos}", duracao)
+    if total_arquivos == 0:
+        status("extracao concluida sem arquivos gerados")
+        ctx["extracao_ok"] = False
+        detalhe = (
+            f"Diretório: {destino}\n"
+            f"O binwalk rodou mas não gerou nenhum arquivo.\n"
+            f"Isso pode acontecer quando as estruturas identificadas não "
+            f"possuem extrator disponível ou o arquivo de origem não contém "
+            f"o payload completo."
+        )
+        if stderr.strip():
+            detalhe += f"\n\nMensagens do binwalk:\n{limitar_linhas(stderr, 20)}"
+        return _estado("extracao", "parcial",
+                       "nada foi extraído", detalhe, duracao)
+
+    ctx["extracao_ok"] = True
+    ctx["total_extraidos"] = total_arquivos
+    status(f"extracao concluida: {total_arquivos} arquivos")
+    resumo = f"{total_arquivos} arquivos extraídos"
+    detalhe = f"Diretório: {destino}\nArquivos: {total_arquivos}"
+    return _estado("extracao", "ok", resumo, detalhe, duracao)
 
 
 # --------------------------------------------------------------------------
-# Etapa 4 — pós-processamento (condicional: só roda se extraiu algo)
+# Etapa 4 — pós-processamento
 # --------------------------------------------------------------------------
 def etapa_pos_processamento(caminho, status, ctx):
-    if not ctx.get("dir_extracao"):
+    if not ctx.get("extracao_ok"):
         return _estado("pos_processamento", "pulada",
                        "extração não gerou arquivos", "", 0.0)
 
@@ -189,34 +245,44 @@ def etapa_pos_processamento(caminho, status, ctx):
         return _estado("pos_processamento", "pulada",
                        "diretório de extração sumiu", "", 0.0)
 
+    extras, invalidos = _compilar_padroes_extras(ctx.get("procurar", ""))
+    ctx["procurar_invalidos"] = invalidos
+
     inicio = time.monotonic()
-    achados = {"sensiveis": [], "urls": set(), "emails": set(),
-               "credenciais": set(), "ips": set()}
+    achados = {
+        "sensiveis": [], "urls": set(), "emails": set(),
+        "credenciais": set(), "ips": set(), "extras": {},
+    }
+    for regex_str, _ in extras:
+        achados["extras"][regex_str] = []
     binarios_elf = 0
 
-    # Varre tudo que foi extraído
     for arquivo in destino.rglob("*"):
         if not arquivo.is_file():
             continue
 
-        # Detecta ELFs
         c, tipo, _, _ = rodar(["file", "-b", str(arquivo)], 10)
         eh_elf = c == 0 and "ELF" in tipo
         if eh_elf:
             binarios_elf += 1
 
-        # Nomes sensíveis
+        caminho_rel = str(arquivo.relative_to(destino))
+
         for padrao in PADROES_SENSIVEIS:
-            if re.search(padrao, str(arquivo)):
-                achados["sensiveis"].append(str(arquivo.relative_to(destino)))
+            if re.search(padrao, caminho_rel):
+                achados["sensiveis"].append(caminho_rel)
                 break
 
-        # Strings interessantes só em ELFs (evita varrer tudo)
+        for regex_str, compilado in extras:
+            if compilado.search(caminho_rel):
+                achados["extras"][regex_str].append(f"[nome] {caminho_rel}")
+
         if not eh_elf or not binario_existe("strings"):
             continue
-        c, saida, _, _ = rodar(["strings", "-n", "6", str(arquivo)], 60)
+        c, saida, _, _ = rodar(["strings", "-n", "6", str(arquivo)], 120)
         if c != 0:
             continue
+
         for linha in saida.splitlines():
             for padrao in PADROES_STRINGS_INTERESSANTES:
                 m = re.search(padrao, linha)
@@ -232,13 +298,23 @@ def etapa_pos_processamento(caminho, status, ctx):
                 elif padrao.startswith(r"\b(?:"):
                     achados["ips"].add(achado)
 
+            for regex_str, compilado in extras:
+                m = compilado.search(linha)
+                if m:
+                    trecho = m.group(0)[:200]
+                    entrada = f"[{caminho_rel}] {trecho}"
+                    if entrada not in achados["extras"][regex_str]:
+                        achados["extras"][regex_str].append(entrada)
+
     ctx["achados"] = achados
     ctx["binarios_elf"] = binarios_elf
 
     duracao = time.monotonic() - inicio
+    total_extras = sum(len(v) for v in achados["extras"].values())
     resumo = (f"{binarios_elf} binários ELF, "
-              f"{len(achados['sensiveis'])} arquivos sensíveis, "
-              f"{len(achados['urls'])} URLs")
+              f"{len(achados['sensiveis'])} sensíveis, "
+              f"{len(achados['urls'])} URLs"
+              + (f", {total_extras} extras" if total_extras else ""))
 
     detalhe_linhas = [f"Binários ELF encontrados: {binarios_elf}"]
     if achados["sensiveis"]:
@@ -253,6 +329,14 @@ def etapa_pos_processamento(caminho, status, ctx):
     if achados["emails"]:
         detalhe_linhas.append(f"\nE-mails: {len(achados['emails'])}")
         detalhe_linhas.extend(f"  {e}" for e in list(achados["emails"])[:10])
+    for regex_str, ocorrencias in achados["extras"].items():
+        if not ocorrencias:
+            continue
+        detalhe_linhas.append(f"\nPadrão '{regex_str}': {len(ocorrencias)} ocorrências")
+        detalhe_linhas.extend(f"  {o}" for o in ocorrencias[:15])
+    if invalidos:
+        detalhe_linhas.append("\nPadrões inválidos (ignorados):")
+        detalhe_linhas.extend(f"  '{p}' — {erro}" for p, erro in invalidos)
 
     return _estado("pos_processamento", "ok", resumo,
                    "\n".join(detalhe_linhas), duracao)

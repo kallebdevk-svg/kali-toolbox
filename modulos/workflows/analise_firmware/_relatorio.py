@@ -14,6 +14,16 @@ LEGENDA = {
 }
 
 
+def _cabecalho(versao, inicio, etapas):
+    linhas = [
+        f"=== Análise de firmware ===",
+        f"Versão do módulo: {versao}",
+        f"Iniciado em:      {inicio}",
+        "",
+    ]
+    return linhas
+
+
 def _sumario_executivo(ctx, etapas):
     linhas = ["=== Sumário executivo ===", ""]
 
@@ -26,20 +36,20 @@ def _sumario_executivo(ctx, etapas):
 
     achados = ctx.get("achados", {})
     binarios = ctx.get("binarios_elf", 0)
-    estruturas = len(ctx.get("estrutura_linhas", []))
+    estruturas = len(ctx.get("estruturas_extraiveis", []))
 
     linhas.append("Achados principais:")
-    linhas.append(f"  Estruturas embutidas: {estruturas}")
+    linhas.append(f"  Estruturas extraíveis: {estruturas}")
     if binarios:
-        linhas.append(f"  Binários ELF:         {binarios}")
+        linhas.append(f"  Binários ELF:          {binarios}")
     if achados.get("sensiveis"):
-        linhas.append(f"  Arquivos sensíveis:   {len(achados['sensiveis'])}")
+        linhas.append(f"  Arquivos sensíveis:    {len(achados['sensiveis'])}")
     if achados.get("credenciais"):
-        linhas.append(f"  Credenciais:          {len(achados['credenciais'])}")
+        linhas.append(f"  Credenciais:           {len(achados['credenciais'])}")
     if achados.get("urls"):
-        linhas.append(f"  URLs:                 {len(achados['urls'])}")
+        linhas.append(f"  URLs:                  {len(achados['urls'])}")
     if achados.get("emails"):
-        linhas.append(f"  E-mails:              {len(achados['emails'])}")
+        linhas.append(f"  E-mails:               {len(achados['emails'])}")
 
     if achados.get("sensiveis"):
         linhas.append("")
@@ -83,19 +93,24 @@ def _legenda(etapas):
     return linhas
 
 
-def montar(ctx, etapas, detalhado=False):
-    """Devolve (saida_para_painel, relatorio_completo)."""
+def montar(ctx, etapas, versao, inicio, detalhado=False):
+    """Devolve (saida_para_painel, relatorio_completo).
+
+    `versao` é a versão do módulo (do META), `inicio` é a data/hora do
+    começo da execução, já formatada como string.
+    """
+    cabecalho = _cabecalho(versao, inicio, etapas)
     sumario = _sumario_executivo(ctx, etapas)
     resumo = _resumo_etapas(etapas)
     detalhes = _detalhes(etapas)
     legenda = _legenda(etapas)
 
-    completo = "\n".join(sumario + resumo + detalhes + [""] + legenda)
+    completo = "\n".join(cabecalho + sumario + resumo + detalhes + [""] + legenda)
     if detalhado:
         painel = completo
     else:
         painel = "\n".join(
-            sumario + resumo
+            cabecalho + sumario + resumo
             + ["(use 'detalhado' para incluir a saída completa de cada etapa)"]
             + [""] + legenda
         )

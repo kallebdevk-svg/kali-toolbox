@@ -1,11 +1,23 @@
 """
-Workflow do Kali Toolbox: análise de firmware (v1.0).
+Workflow do Kali Toolbox: análise de firmware (v1.4).
 
 Orquestra file, hashes, binwalk e análise dos arquivos extraídos
-em um relatório único com sumário executivo.
+em um relatório único com sumário executivo. Aceita padrões regex
+extras, expande ~ e caminhos relativos, dá mensagens específicas
+quando o caminho de entrada não é válido, e grava a versão do módulo
+e o horário de início no topo do relatório.
 """
 import os
 import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+_raiz = Path(__file__).resolve().parents[2]
+if str(_raiz) not in sys.path:
+    sys.path.insert(0, str(_raiz))
+
+from _lib._core import resolver_caminho, validar_arquivo_existe
 
 from ._docs import DOCS
 from ._funcoes import FUNCOES
@@ -15,8 +27,8 @@ from ._relatorio import montar as montar_relatorio
 META = {
     "modulo": True,
     "ferramenta": "analise_firmware",
-    "versao": "1.0",
-    "descricao": "Análise de firmware com binwalk, extração e inspeção dos arquivos extraídos",
+    "versao": "1.4",
+    "descricao": "Análise de firmware com binwalk, extração, inspeção dos arquivos e busca por padrões",
     "categoria": "workflows",
     "ordem": ["completa", "estrutura_simples"],
 }
@@ -34,8 +46,24 @@ def verificar():
     return True, "todas as ferramentas disponíveis"
 
 
-def _executar_etapas(caminho, ordem, detalhado, status):
-    ctx = {}
+def _resolver_e_validar(caminho_bruto):
+    """Resolve o caminho e valida como arquivo regular.
+
+    Devolve (caminho_absoluto, mensagem_de_erro).
+    Se a mensagem for vazia, o caminho é válido.
+    """
+    caminho = resolver_caminho(str(caminho_bruto).strip())
+    if not caminho:
+        return "", "caminho vazio"
+    ok, msg = validar_arquivo_existe(caminho)
+    if not ok:
+        return caminho, msg
+    return caminho, ""
+
+
+def _executar_etapas(caminho, ordem, detalhado, procurar, status):
+    inicio = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ctx = {"procurar": procurar or ""}
     resultados = []
     for nome in ordem:
         funcao = TODAS_AS_ETAPAS.get(nome)
@@ -43,19 +71,25 @@ def _executar_etapas(caminho, ordem, detalhado, status):
             continue
         resultados.append(funcao(caminho, status, ctx))
 
-    painel, completo = montar_relatorio(ctx, resultados, detalhado=detalhado)
+    painel, completo = montar_relatorio(
+        ctx, resultados,
+        versao=META["versao"],
+        inicio=inicio,
+        detalhado=detalhado,
+    )
     return painel, completo, resultados
 
 
 def _executar_completa(params, status, timeout):
-    caminho = str(params.get("arquivo", "")).strip()
-    detalhado = bool(params.get("detalhado", False))
-    if not caminho or not os.path.isfile(caminho):
-        return {"status": "erro", "saida": "", "codigo": None,
-                "erro": f"arquivo não encontrado: {caminho!r}"}
+    caminho, erro_caminho = _resolver_e_validar(params.get("arquivo", ""))
+    if erro_caminho:
+        return {"status": "erro", "saida": "", "codigo": None, "erro": erro_caminho}
 
-    painel, completo, resultados = _executar_etapas(caminho, ORDEM_PADRAO,
-                                                    detalhado, status)
+    procurar = str(params.get("procurar", "")).strip()
+    detalhado = bool(params.get("detalhado", False))
+
+    painel, completo, resultados = _executar_etapas(
+        caminho, ORDEM_PADRAO, detalhado, procurar, status)
     algum_ok = any(r["estado"] in ("ok", "parcial") for r in resultados)
     return {
         "status": "ok" if algum_ok else "erro",
@@ -67,14 +101,15 @@ def _executar_completa(params, status, timeout):
 
 
 def _executar_estrutura_simples(params, status, timeout):
-    caminho = str(params.get("arquivo", "")).strip()
+    caminho, erro_caminho = _resolver_e_validar(params.get("arquivo", ""))
+    if erro_caminho:
+        return {"status": "erro", "saida": "", "codigo": None, "erro": erro_caminho}
+
     detalhado = bool(params.get("detalhado", True))
-    if not caminho or not os.path.isfile(caminho):
-        return {"status": "erro", "saida": "", "codigo": None,
-                "erro": f"arquivo não encontrado: {caminho!r}"}
 
     ordem = ["identificacao", "estrutura"]
-    painel, completo, resultados = _executar_etapas(caminho, ordem, detalhado, status)
+    painel, completo, resultados = _executar_etapas(
+        caminho, ordem, detalhado, "", status)
     algum_ok = any(r["estado"] in ("ok", "parcial") for r in resultados)
     return {
         "status": "ok" if algum_ok else "erro",
