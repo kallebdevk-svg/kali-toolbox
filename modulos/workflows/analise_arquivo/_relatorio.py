@@ -1,5 +1,4 @@
-"""Monta o relatório agregado do workflow."""
-
+"""Monta o relatório agregado do workflow de análise de arquivo."""
 
 SIMBOLOS = {
     "ok": "[✓]",
@@ -18,10 +17,19 @@ LEGENDA = {
 }
 
 
+def _cabecalho_meta(versao, inicio):
+    return [
+        "=== Análise de arquivo ===",
+        f"Versão do módulo: {versao}",
+        f"Iniciado em:      {inicio}",
+        "",
+    ]
+
+
 def _cabecalho(caminho, tamanho, etapas):
     linhas = [
-        f"=== Análise de arquivo: {caminho} ===",
-        f"Tamanho: {tamanho}",
+        f"Arquivo:  {caminho}",
+        f"Tamanho:  {tamanho}",
         "",
     ]
     for e in etapas:
@@ -33,7 +41,7 @@ def _cabecalho(caminho, tamanho, etapas):
 
 
 def _detalhes(etapas):
-    blocos = ["Detalhes por etapa:", ""]
+    blocos = ["=== Detalhes por etapa ===", ""]
     for e in etapas:
         blocos.append(f"--- {e['nome']} ---")
         blocos.append(e["detalhe"] or "(sem saída)")
@@ -50,15 +58,24 @@ def _legenda(etapas):
     return linhas
 
 
-def montar(caminho, tamanho, etapas, detalhado=False):
-    """Devolve (saida_para_painel, relatorio_completo)."""
-    cabecalho = _cabecalho(caminho, tamanho, etapas)
+def montar(caminho, tamanho, etapas, versao, inicio, detalhado=False):
+    """Devolve (saida_para_painel, relatorio_completo).
+
+    `versao` é a versão do módulo (do META), `inicio` é a data/hora do
+    começo da execução, já formatada como string.
+    """
+    meta = _cabecalho_meta(versao, inicio)
+    resumo = _cabecalho(caminho, tamanho, etapas)
     detalhes = _detalhes(etapas)
     legenda = _legenda(etapas)
 
-    completo = "\n".join(cabecalho + detalhes + [""] + legenda)
+    completo = "\n".join(meta + resumo + detalhes + [""] + legenda)
     if detalhado:
         painel = completo
     else:
-        painel = "\n".join(cabecalho + ["(use o parâmetro 'detalhado' para incluir os detalhes ou consulte o arquivo de relatório)"] + [""] + legenda)
+        painel = "\n".join(
+            meta + resumo
+            + ["(use o parâmetro 'detalhado' para incluir os detalhes ou consulte o arquivo de relatório)"]
+            + [""] + legenda
+        )
     return painel, completo
