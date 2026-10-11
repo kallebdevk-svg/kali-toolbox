@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs e relatórios gerados pelo menu
+logs/
+relatorios/
+*.log
+
+# Capturas de ferramentas
+*.pcap
+*.pcapng
+*.cap
+*.ivs
+*.csv
+
+# Arquivos de configuração pessoal
+config/local.yaml
+.env
+
+# Editores
+.vscode/
+.idea/
+*.swp
